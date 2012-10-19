@@ -16,23 +16,27 @@ module Mongoid::Taggable
   def self.included(base)
     # create fields for tags and index it
     base.field :tags_array, :type => Array, :default => []
-    base.index [['tags_array', Mongo::ASCENDING]]
+    base.index({ tags_array: 1 }, { background: true })
 
     # add callback to save tags index
     base.after_save do |document|
       if document.tags_array_changed
-        document.class.save_tags_index!
+        document.save_tags_index
         document.tags_array_changed = false
       end
     end
 
+	base.after_destroy do |document|
+	  document.reduce_tags_index
+	end
+
     # extend model
     base.extend         ClassMethods
     base.send :include, InstanceMethods
-    base.send :attr_accessor, :tags_array_changed
+    base.send :attr_accessor, :tags_array_changed, :raw_tags_array
 
     # enable indexing as default
-    base.enable_tags_index!
+    #base.enable_tags_index!
   end
 
   module ClassMethods
@@ -51,71 +55,53 @@ module Mongoid::Taggable
     end
 
     def tags
-      tags_index_collection.master.find.to_a.map{ |r| r["_id"] }
-    end
-
-    # retrieve the list of tags with weight (i.e. count), this is useful for
-    # creating tag clouds
-    def tags_with_weight
-      tags_index_collection.master.find.to_a.map{ |r| [r["_id"], r["value"]] }
-    end
-
-    def disable_tags_index!
-      @do_tags_index = false
-    end
-
-    def enable_tags_index!
-      @do_tags_index = true
+      Tag.where(:owner => self.to_s)
     end
 
     def tags_separator(separator = nil)
       @tags_separator = separator if separator
       @tags_separator || ','
     end
-
-    def tags_index_collection_name
-      "#{collection_name}_tags_index"
-    end
-
-    def tags_index_collection
-      @@tags_index_collection ||= Mongoid::Collection.new(self, tags_index_collection_name)
-    end
-
-    def save_tags_index!
-      return unless @do_tags_index
-
-      map = "function() {
-        if (!this.tags_array) {
-          return;
-        }
-
-        for (index in this.tags_array) {
-          emit(this.tags_array[index], 1);
-        }
-      }"
-
-      reduce = "function(previous, current) {
-        var count = 0;
-
-        for (index in current) {
-          count += current[index]
-        }
-
-        return count;
-      }"
-
-     self.collection.master.map_reduce(map, reduce, :out => tags_index_collection_name)
-    end
   end
 
   module InstanceMethods
     def tags
-      (tags_array || []).join(self.class.tags_separator)
+      (self.tags_array || []).join(self.class.tags_separator.split('|').first)
     end
 
     def tags=(tags)
-      self.tags_array = tags.split(self.class.tags_separator).map(&:strip).reject(&:blank?)
+	  @raw_tags_array = self.tags_array || []
+      self.tags_array = tags.split(%r{["#{self.class.tags_separator}"]\s*}).map(&:strip).reject(&:blank?)
       @tags_array_changed = true
     end
+
+    def save_tags_index
+	  target = self
+	  reduce = self.raw_tags_array - self.tags_array
+	  increase = self.tags_array - self.raw_tags_array
+	  reduce.each do |name|
+		tag = Tag.where(:owner => target.class).where(:name => name).last
+		return unless tag
+		tag.num > 1 ?
+		  tag.update_attribute(:num, tag.num-1) :
+		  tag.destroy
+	  end
+	  increase.each do |name|
+		tag = Tag.where(:owner => target.class).where(:name => name).last
+		tag.nil? ?
+		  Tag.create(:name => name, :owner => target.class) :
+		  tag.update_attribute(:num, tag.num+1)
+	  end
+    end
+
+	def reduce_tags_index
+	  target = self
+	  self.tags_array.each do |name|
+		tag = Tag.where(:owner => target.class).where(:name => name).last
+		tag.num > 1 ?
+		  tag.update_attribute(:num, tag.num-1) :
+		  tag.destroy
+	  end
+	end
   end
 end
