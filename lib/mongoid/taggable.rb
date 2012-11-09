@@ -20,9 +20,8 @@ module Mongoid::Taggable
 
     # add callback to save tags index
     base.after_save do |document|
-      if document.tags_array_changed
+      if document.tags_array_changed?
         document.save_tags_index
-        document.tags_array_changed = false
       end
     end
 
@@ -33,7 +32,7 @@ module Mongoid::Taggable
     # extend model
     base.extend         ClassMethods
     base.send :include, InstanceMethods
-    base.send :attr_accessor, :tags_array_changed, :raw_tags_array
+    base.send :attr_accessor, :raw_tags_array
 
     # enable indexing as default
     #base.enable_tags_index!
@@ -66,13 +65,12 @@ module Mongoid::Taggable
 
   module InstanceMethods
     def tags
-      (self.tags_array || []).join(self.class.tags_separator.split('|').first)
+      (self.tags_array || []).join("#{self.class.tags_separator.split('|').first} ")
     end
 
     def tags=(tags)
 	  @raw_tags_array = self.tags_array || []
       self.tags_array = tags.split(%r{["#{self.class.tags_separator}"]\s*}).map(&:strip).reject(&:blank?)
-      @tags_array_changed = true
     end
 
     def save_tags_index
